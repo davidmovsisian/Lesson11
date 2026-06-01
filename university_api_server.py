@@ -4,8 +4,14 @@ University Context API Server
 A Flask server that enriches university data with real-time city and country
 information from two free public APIs:
 
-  - Teleport API  (https://api.teleport.org/api)   — city quality of life, salaries
-  - World Bank API (https://api.worldbank.org/v2)  — country economic indicators
+  - WhereNext API  (https://getwherenext.com/api/data)  — country cost of living,
+                                                           relocation index, salaries
+  - World Bank API (https://api.worldbank.org/v2)        — country economic indicators
+
+NOTE: The original Teleport API (api.teleport.org) is permanently offline as of 2026.
+      WhereNext is the best free replacement: no API key, CC BY 4.0, 95 countries.
+      WhereNext data is country-level (not city-level). For city-level cost data,
+      the /api/data/city-prices endpoint covers 50+ major cities.
 
 Run:
     pip install flask flask-cors requests
@@ -21,23 +27,61 @@ from flask_cors import CORS
 app = Flask(__name__)
 CORS(app)
 
-TELEPORT_BASE  = "https://api.teleport.org/api"
+WHERENEXT_BASE = "https://getwherenext.com/api/data"
 WORLDBANK_BASE = "https://api.worldbank.org/v2"
 
 TIMEOUT = 8  # seconds for upstream requests
+
+# WhereNext datasets cached at startup to avoid repeated fetches.
+# These are bulk endpoints (entire dataset in one call) so we fetch once
+# and filter in-memory by country ISO-2 code or city name.
+_wn_cache: dict = {}
 
 
 # ──────────────────────────────────────────────
 #  Helpers
 # ──────────────────────────────────────────────
 
-def teleport_get(path: str, **kwargs):
-    """GET a Teleport endpoint and return parsed JSON, or raise on error."""
-    url = f"{TELEPORT_BASE}{path}"
-    print(f"[teleport_get] Fetching {url} with params: {kwargs.get('params', {})}")
-    resp = requests.get(url, timeout=TIMEOUT, **kwargs)
-    resp.raise_for_status()
-    return resp.json()
+def wherenext_get(endpoint: str) -> list | dict:
+    """
+    Fetch a WhereNext bulk dataset, caching the result in memory.
+    WhereNext returns the full dataset in one call — we cache it so
+    repeated /enrich calls don't re-fetch the same data.
+    """
+    if endpoint not in _wn_cache:
+        url = f"{WHERENEXT_BASE}/{endpoint}"
+        print(f"[wherenext_get] Fetching {url}")
+        resp = requests.get(url, timeout=TIMEOUT)
+        resp.raise_for_status()
+        _wn_cache[endpoint] = resp.json()
+    return _wn_cache[endpoint]
+
+
+def wherenext_find_country(dataset: list, iso2: str) -> dict | None:
+    """
+    Find a country row in a WhereNext dataset by ISO-2 code.
+    WhereNext uses 'iso2' or 'country_code' as the key depending on dataset.
+    """
+    iso2 = iso2.upper()
+    for row in dataset:
+        code = (row.get("iso2") or row.get("country_code") or "").upper()
+        if code == iso2:
+            return row
+    return None
+
+
+def wherenext_find_city(dataset: list, city_name: str) -> dict | None:
+    """Find a city row in a WhereNext dataset by case-insensitive city name."""
+    city_lower = city_name.lower()
+    # Exact match first
+    for row in dataset:
+        if row.get("city", "").lower() == city_lower:
+            return row
+    # Partial match fallback
+    for row in dataset:
+        if city_lower in row.get("city", "").lower():
+            return row
+    return None
 
 
 def worldbank_get(path: str, **kwargs):
@@ -55,30 +99,6 @@ def worldbank_get(path: str, **kwargs):
     return payload
 
 
-def get_urban_area_slug(city_name: str) -> str | None:
-    """
-    Resolve a free-text city name to a Teleport urban-area slug by calling
-    /cities/?search=<name> and following the embedded urban-area link.
-
-    Returns the slug string (e.g. 'london') or None if the city has no
-    associated Teleport urban area.
-    """
-    data = teleport_get("/cities/", params={"search": city_name, "limit": 5})
-    results = data.get("_embedded", {}).get("city:search-results", [])
-    if not results:
-        return None
-
-    for result in results:
-        links = result.get("_links", {})
-        ua_link = links.get("city:urban_area", {}).get("href", "")
-        if ua_link:
-            # href looks like: https://api.teleport.org/api/urban_areas/slug:london/
-            slug = ua_link.rstrip("/").split("slug:")[-1]
-            return slug
-
-    return None
-
-
 def error(msg: str, code: int = 400):
     return jsonify({"error": msg}), code
 
@@ -89,13 +109,15 @@ def error(msg: str, code: int = 400):
 
 @app.route("/")
 def index():
-    return jsonify({
-        "message": f"University Context API — provides city and country data for university records."
-    })
-
+    """
+    GET /
+    -----
+    Returns a directory of all available endpoints.
+    """
+    return jsonify({"message": "University Context Server"})
 
 # ──────────────────────────────────────────────
-#  Combined enrichment endpoint
+#  Combined /enrich endpoint
 # ──────────────────────────────────────────────
 
 @app.route("/enrich")
@@ -105,36 +127,34 @@ def enrich():
     ------------------------------------------------------
     One-shot enrichment for a university record from the THE dataset.
 
-    Combines Teleport quality-of-life scores (city level) with three World
-    Bank indicators (country level) into a single response. Partial results
-    are returned if the city has no Teleport urban area — the `teleport`
-    key will contain an `error` field instead of scores.
+    Combines WhereNext cost-of-living and relocation data (country level,
+    with city-level prices where available) with three World Bank indicators.
+    Partial results are returned gracefully if a source has no data for the
+    given country or city.
 
     Query params:
         city    (str, required) — city where the university is located
-        country (str, required) — ISO-2 country code
+        country (str, required) — ISO-2 country code (e.g. 'GB')
         year    (str, optional) — World Bank year or range (default: '2023')
 
     Returns:
         {
-          "city":    "Oxford",
-          "country": "GB",
-          "year":    "2023",
-          "teleport": {
-            "slug":                "oxford",
-            "teleport_city_score": 73.2,
-            "categories":          [...]
+          "city": "Oxford", "country": "GB", "year": "2023",
+          "wherenext": {
+            "cost_of_living": { "index": 72, "monthly_usd": 2800, ... },
+            "relocation_index": { "overall": 74, "safety": 81, ... },
+            "city_prices": { "rent_1br_city_usd": 1800, ... } | null
           },
           "worldbank": {
-            "gdp_per_capita":       { "value": 46125, "unit": "current USD" },
-            "unemployment":         { "value": 4.1,   "unit": "% of labour force" },
-            "rd_expenditure":       { "value": 2.93,  "unit": "% of GDP" }
+            "gdp_per_capita": { "value": 46125, "unit": "current USD" },
+            "unemployment":   { "value": 4.1,   "unit": "% of labour force" },
+            "rd_expenditure": { "value": 2.93,  "unit": "% of GDP" }
           }
         }
     """
-    city = request.args.get("city", "").strip()
+    city    = request.args.get("city", "").strip()
     country = request.args.get("country", "").strip().upper()
-    year = request.args.get("year", "2023").strip()
+    year    = request.args.get("year", "2023").strip()
 
     if not city:
         return error("'city' query parameter is required")
@@ -143,29 +163,33 @@ def enrich():
 
     result = {"city": city, "country": country, "year": year}
 
-    # ── Teleport scores ───────────────────────
+    # ── WhereNext ─────────────────────────────
+    wn = {}
     try:
-        slug = get_urban_area_slug(city)
-        if slug:
-            scores_raw = teleport_get(f"/urban_areas/slug:{slug}/scores/")
-            result["teleport"] = {
-                "slug":                slug,
-                "teleport_city_score": round(scores_raw.get("teleport_city_score", 0), 1),
-                "summary":             scores_raw.get("summary", ""),
-                "categories": [
-                    {
-                        "name":            cat.get("name"),
-                        "score_out_of_10": round(cat.get("score_out_of_10", 0), 2),
-                    }
-                    for cat in scores_raw.get("categories", [])
-                ],
-            }
-        else:
-            result["teleport"] = {
-                "error": f"No Teleport urban area found for '{city}'"
-            }
+        col_rows = wherenext_get("cost-of-living")
+        col_rows = col_rows if isinstance(col_rows, list) else col_rows.get("data", [])
+        col_row  = wherenext_find_country(col_rows, country)
+        wn["cost_of_living"] = col_row or {"note": f"No WhereNext cost data for '{country}'"}
     except Exception as exc:
-        result["teleport"] = {"error": str(exc)}
+        wn["cost_of_living"] = {"error": str(exc)}
+
+    try:
+        rel_rows = wherenext_get("relocation-index")
+        rel_rows = rel_rows if isinstance(rel_rows, list) else rel_rows.get("data", [])
+        rel_row  = wherenext_find_country(rel_rows, country)
+        wn["relocation_index"] = rel_row or {"note": f"No WhereNext relocation data for '{country}'"}
+    except Exception as exc:
+        wn["relocation_index"] = {"error": str(exc)}
+
+    try:
+        city_rows = wherenext_get("city-prices")
+        city_rows = city_rows if isinstance(city_rows, list) else city_rows.get("data", [])
+        city_row  = wherenext_find_city(city_rows, city)
+        wn["city_prices"] = city_row  # None is fine — not all cities are covered
+    except Exception as exc:
+        wn["city_prices"] = {"error": str(exc)}
+
+    result["wherenext"] = wn
 
     # ── World Bank indicators ─────────────────
     wb = {}
@@ -174,16 +198,12 @@ def enrich():
         "unemployment":   ("SL.UEM.TOTL.ZS", "% of labour force"),
         "rd_expenditure": ("GB.XPD.RSDV.GD.ZS", "% of GDP"),
     }
-
     for key, (code, unit) in indicators.items():
         try:
-            raw = worldbank_get(
-                f"/country/{country}/indicator/{code}",
-                params={"date": year},
-            )
+            raw     = worldbank_get(f"/country/{country}/indicator/{code}", params={"date": year})
             entries = [e for e in (raw or []) if e.get("value") is not None]
             if entries:
-                latest = sorted(entries, key=lambda x: x["date"], reverse=True)[0]
+                latest  = sorted(entries, key=lambda x: x["date"], reverse=True)[0]
                 wb[key] = {"value": latest["value"], "unit": unit, "year": latest["date"]}
             else:
                 wb[key] = {"value": None, "unit": unit, "note": "no data for this year"}
@@ -200,7 +220,7 @@ def enrich():
 
 @app.errorhandler(404)
 def not_found(e):
-    return jsonify({"error": "Endpoint not found. GET / for the full endpoint list."}), 404
+    return jsonify({"error": "Endpoint not found. GET / for the full list."}), 404
 
 
 @app.errorhandler(Exception)
@@ -214,9 +234,10 @@ def handle_exception(e):
 
 if __name__ == "__main__":
     print("\n University Context API")
-    print(" ─────────────────────────────────────────────")
-    print(" Teleport  →  https://api.teleport.org/api")
-    print(" World Bank → https://api.worldbank.org/v2")
-    print(" ─────────────────────────────────────────────")
+    print(" ─────────────────────────────────────────────────")
+    print(" WhereNext  →  https://getwherenext.com/api/data")
+    print(" World Bank →  https://api.worldbank.org/v2")
+    print(" ─────────────────────────────────────────────────")
+    print(" NOTE: Teleport API is permanently offline (2026)")
     print(" Open http://localhost:5000/ for the endpoint index\n")
     app.run(host="0.0.0.0", port=5000, debug=True)

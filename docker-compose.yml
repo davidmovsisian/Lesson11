@@ -1,0 +1,22 @@
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui_new
+    ports:
+      - "3000:8080"
+    volumes:
+      - open-webui_new:/app/backend/data
+    environment:
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      RAG_EMBEDDING_ENGINE: "openai"
+      RAG_OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      RAG_OPENAI_API_BASE_URL: "https://api.openai.com/v1"
+      RAG_EMBEDDING_MODEL: "text-embedding-3-small"
+      ENABLE_PERSISTENT_CONFIG: "False"
+      ENABLE_ASYNC_EMBEDDING: "False"
+      RAG_EMBEDDING_BATCH_SIZE: "1"
+      RAG_EMBEDDING_OPENAI_BATCH_SIZE: "1"
+    restart: always
+
+volumes:
+  open-webui_new:

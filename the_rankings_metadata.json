@@ -1,0 +1,23 @@
+{
+  "dataset": "THE World University Rankings 2016-2026",
+  "source": "Times Higher Education (THE)",
+  "description": "Annual global university rankings published by Times Higher Education, covering the years 2016 to 2026. Each record represents a single university for a single year.",
+  "row_count": 16713,
+  "year_range": "2016-2026",
+  "columns": {
+    "Rank": "Numerical rank of the university for the given year. Float because some universities share a rank (e.g. 201.0 for a band).",
+    "Name": "Full official name of the university.",
+    "Country": "Country or territory where the university is located.",
+    "Student Population": "Total number of enrolled students (undergraduate and postgraduate).",
+    "Students to Staff Ratio": "Ratio of students per academic staff member. Lower values indicate more staff per student.",
+    "International Students": "Percentage of the student body that are international (non-domestic) students, expressed as a string with a '%' suffix (e.g. '26%').",
+    "Female to Male Ratio": "Gender split of the student population, expressed as a string in 'F : M' format (e.g. '46 : 54'). Female percentage listed first.",
+    "Overall Score": "Composite THE score out of 100, aggregating all pillar scores.",
+    "Teaching": "Teaching pillar score (0-100). Measures the learning environment, including staff-to-student ratio, doctorate-to-bachelor ratio, and institutional reputation for teaching.",
+    "Research Environment": "Research environment pillar score (0-100). Covers research income, productivity, and reputation.",
+    "Research Quality": "Research quality pillar score (0-100). Based on citation impact, research strength, and excellence.",
+    "Industry Impact": "Industry income pillar score (0-100). Measures knowledge transfer — how much industry pays the university for research and consultancy.",
+    "International Outlook": "International outlook pillar score (0-100). Reflects the proportion of international students, international staff, and international co-authorship.",
+    "Year": "The ranking year (integer, 2016-2026)."
+  }
+}

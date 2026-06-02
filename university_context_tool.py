@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 
 # ── Change this to your Flask server address ──────────────────────────────────
 ENRICH_API_URL = "http://host.docker.internal:5000/enrich"
+# ENRICH_API_URL = "http://university-context:5000/enrich"
 # ─────────────────────────────────────────────────────────────────────────────
 
 

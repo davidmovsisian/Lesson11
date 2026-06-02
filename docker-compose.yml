@@ -1,9 +1,9 @@
 services:
-  university-api:
+  university-context:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: university-api-server
+    container_name: university-context
     ports:
       - "5000:5000"
     restart: unless-stopped
